@@ -7,7 +7,6 @@ import urllib, re
 import json
 import traceback
 from BeautifulSoup import BeautifulSoup
-import xml.etree.ElementTree as ET
 from cache.JiangQueryCache import JiangQueryCache 
 from sqlalchemy.orm.exc import NoResultFound
 from time import localtime, strftime, time

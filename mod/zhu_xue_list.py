@@ -1,15 +1,17 @@
 # -*- coding: utf-8 -*-
+# 可申请助学金
+from cache.ZhuListCache import ZhuListCache
 from tornado.httpclient import HTTPRequest, AsyncHTTPClient
 import tornado.web
 import tornado.gen
 import urllib, re
-import json,base64
+import json
 import traceback
 from BeautifulSoup import BeautifulSoup
-import xml.etree.ElementTree as ET
-from cache.ZhuListCache import ZhuListCache
 from sqlalchemy.orm.exc import NoResultFound
-from time import time,localtime,strftime
+from time import localtime, strftime, time
+from auth import getCookie
+
 
 class zhu_listHandler(tornado.web.RequestHandler):
     @property
@@ -28,66 +30,69 @@ class zhu_listHandler(tornado.web.RequestHandler):
         user = self.get_argument('number',default=None)
         password = self.get_argument('password',default=None)
 
-        #read from cache
+        # read from cache
         try:
-            status=self.db.query(ZhuListCache).filter(ZhuListCache.number==user).one()
-            if status.date > int(time())-40000 and status.text != '*' :
+            status = self.db.query(ZhuListCache).filter(ZhuListCache.number == user).one()
+            if status.date > int(time())-4 and status.text != '*':
                 self.write(status.text)
                 self.finish()
                 return
         except NoResultFound:
-            status = ZhuListCache(number=user,text='*',date = int(time()))
+            status = ZhuListCache(number = user,text = '*',date = int(time()))
             self.db.add(status)
             try:
                 self.db.commit()
             except:
-                self.sb.rollback()
-
-        login_url = 'http://my.seu.edu.cn/userPasswordValidate.portal'
-        index_url = 'http://my.seu.edu.cn/index.portal'
-        main_get_url = "http://xg.urp.seu.edu.cn/epstar/app/template.jsp?mainobj=SWMS/ZXJGLZXT/ZXJSZ/T_ZXJ_ZL&tfile=XGMRMB/BGTAG_APPLY&filter=T_ZXJ_ZL:KTZT=1%20and%20SFKSQ=1%20and%20(SQJSSJ%20is%20not%20null%20and%20%272015-08-24%27%3C=to_char(SQJSSJ,%27yyyy-mm-dd%27)%20and%20%272015-08-24%27%20%3E=%20to_char(SQKSSJ,%20%27yyyy-mm-dd%27))%20and%20(ZXJZLBM%20in%20(select%20ZXJZLBM%20from%20t_zxj_zl%20d%20where%20(select%20sum(a.slxd)%20from%20t_pub_e_detailnumlim%20a,t_zxj_dj%20b,t_xsjbxx_xsjbb%20c%20where%20(a.slxdqbm=b.slxdqbm%20or%20b.slxdqbm%20is%20null)%20and%20b.zxjzlbm=d.zxjzlbm%20and%20a.jd=c.yxsh%20and%20c.xh=%27213131150%27%20group%20by%20b.zxjzlbm)%3E0)%20or%20zxjzlbm%20in%20(select%20zxjzlbm%20from%20t_zxj_zl%20x,%20t_pub_filter_result%20y%20where%20(x.zgxdqbh%20=%20y.filterid%20or%20x.zgxdqbh%20is%20null)%20and%20y.xh%20=%20%27213131150%27))"
+                self.db.rollback()
+        BASE_URL = "http://my.seu.edu.cn/index.portal"
+        ZHU_LIST_URL = "http://my.seu.edu.cn/index.portal?.pn=p1064_p1067"
         retjson = {'code':200, 'content':''}
-
+        
         try:
-            client = AsyncHTTPClient()
-            login_value = {
-                    'Login.Token1':user,
-                    'Login.Token2':password,
-                    'goto':'http://my.seu.edu.cn/loginSuccess.portal',
-                    'gotoOnFail':'http://my.seu.edu.cn/loginFailure.portal'
-               }
-            request = HTTPRequest(
-                                    login_url,
-                                    method='POST',
-                                    body = urllib.urlencode(login_value),
-                                    request_timeout=7
-                                )
-            response = yield tornado.gen.Task(client.fetch, request)
-            if not response.headers:
-                    retjson['code'] = 408
-                    retjson['content'] = 'time out'
-            else:
-                login_cookie = response.headers['Set-Cookie'].split(';')[0]
+            ret = getCookie(self.db,user,password)
+            if ret['code'] == 200:
+                cookie = ret['content']
+                client = AsyncHTTPClient()
                 request = HTTPRequest(
-                                        main_get_url,
-                                        method = 'GET',
-                                        headers={'Cookie':login_cookie,
-                                                 'Referer':' http://xg.urp.seu.edu.cn/epstar/app/template.jsp?mainobj=SWMS/ZXJGLZXT/ZXJSQ/T_ZXJ_XX&tfile=XGMRMB/KJ_APPLY'},
-                                        request_timeout=7)
+                    url = ZHU_LIST_URL,
+                    method = "GET",
+                    headers = {'Cookie':cookie},
+                    request_timeout = 8
+                    )
                 response = yield client.fetch(request)
-                retjson['content'] = self.deal(response.body)
-                    # retjson['content'] = response.body
+                soup = BeautifulSoup(response.body)
+                li_item = soup.find('li',{'id':'one2'})
+                print li_item['onclick']
+                data_url = BASE_URL + li_item['onclick'].split("'")[1]+"&pageIndex=1&pageSize=20"
+                print data_url
+                split_array = response.headers['Set-Cookie'].split(";")
+                cookie = cookie.split(";")[0] + ";" + split_array[0]+";"+split_array[1].split(",")[1]
+                request = HTTPRequest(
+                    url = data_url,
+                    method = "GET",
+                    headers = {
+                        'Cookie':cookie,
+                        'Referer':'http://my.seu.edu.cn/index.portal?.pn=p1064_p1551',
+                        'Host':'my.seu.edu.cn'
+                        },
+                    request_timeout = 8
+                    )
+                response = yield client.fetch(request)
+                data_content = response.body
+                retjson['content'] = self.deal_data(response.body)
+                # retjson['content'] = response.body
+            else:
+                retjson = ret
         except Exception,e:
-                # print traceback.format_exc()
-                # print str(e)
             with open('api_error.log','a+') as f:
-                f.write(strftime('%Y%m%d %H:%M:%S in [api]',localtime(time()))+'\n'+str(str(e)+'\n[jiang_list]'+str(user)+'\nString:'+str(retjson)+'\n\n'))
+                f.write(strftime('%Y%m%d %H:%M:%S in [api]', localtime(time()))+'\n'+str(str(e)+'\n[zhu_list]\t'+str(user)+'\nString:'+str(retjson)+'\n\n'))
             retjson['code'] = 500
             retjson['content'] = 'system error'
         ret = json.dumps(retjson, ensure_ascii=False, indent=2)
         self.write(ret)
         self.finish()
 
+        # refresh cache
         if retjson['code'] == 200:
             status.date = int(time())
             status.text = ret
@@ -96,25 +101,20 @@ class zhu_listHandler(tornado.web.RequestHandler):
                 self.db.commit()
             except Exception,e:
                 self.db.rollback()
-    def deal(self,content):
-        soup = BeautifulSoup(content)
-        item = soup.findAll('td',{'nowrap':'true'})
-        count = len(item)
-        all_item = (count)/11
-        # this maybe 10 !!!!!!!
-        if count<11:
-            return ''
-        else:
-            ret_content = []
-            for i in range(all_item):
-                temp = {
-                    'name':item[2+11*i].text,
-                    'create_time':item[4+11*i].text,
-                    'is_ok':item[5+11*i].text,
-                    'pingdingzhouqi':item[6+11*i].text,
-                    'fafangzhouqi':item[7+11*i].text,
-                    'is_xiaowaishen':item[8+11*i].text,
-                    'is_jijinhui':item[9+11*i].text
-                }
-                ret_content.append(temp)
-            return ret_content
+    def deal_data(self,html):
+        soup = BeautifulSoup(html)
+        div = soup.findAll('div',{'class':'isp-service-item-content'})
+        # div.pop(0)
+        ret = []
+        for item in div:
+            div_item = item.findAll('div',{'class':'jxjInfo'})
+            temp = {
+                'name':item.find('div',{'class':'jxjTitle'}).text,
+                'time':div_item[0].text[3:],
+                'type':div_item[1].text[6:],
+                'term':div_item[2].text[5:],
+                'money':div_item[3].text[3:],
+                'number':div_item[4].text[6:]
+            }
+            ret.append(temp)
+        return ret
